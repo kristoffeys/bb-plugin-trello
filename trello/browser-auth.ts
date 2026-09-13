@@ -46,9 +46,12 @@ import { createTrelloApi } from './api';
 import { authFault, type TrelloCredentials } from './client';
 import { TRELLO_POWER_UP_ADMIN_URL } from './app-key';
 
-/** Route paths, relative to /api/v1/plugins/<id>/http/. */
-export const AUTH_CALLBACK_PATH = 'auth/callback';
-export const AUTH_COMPLETE_PATH = 'auth/complete';
+// Why: bb.http.route rejects a path without a leading slash, so these carry
+// one and the URL builder below concatenates against `/http` rather than
+// `/http/`.
+/** Route paths, relative to /api/v1/plugins/<id>/http. */
+export const AUTH_CALLBACK_PATH = '/auth/callback';
+export const AUTH_COMPLETE_PATH = '/auth/complete';
 
 /** Long enough that a slow approval still lands, short enough to bound reuse. */
 export const PENDING_AUTH_TTL_MS = 5 * 60_000;
@@ -159,7 +162,7 @@ export function trelloAuthCallbackUrl(
   state: string
 ): string {
   const url = new URL(
-    `/api/v1/plugins/${encodeURIComponent(pluginId)}/http/${AUTH_CALLBACK_PATH}`,
+    `/api/v1/plugins/${encodeURIComponent(pluginId)}/http${AUTH_CALLBACK_PATH}`,
     loopbackBaseUrl
   );
   url.searchParams.set('state', state);
