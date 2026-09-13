@@ -46,11 +46,23 @@ import { createWorkItemStore, type ProjectScopeDefaults } from './store.js';
 import { deleteSecretFile, writeSecretFile } from './lib/secret-file.js';
 import { flagValue, positionalArgs } from './cli-args.js';
 import {
+  AUTH_CALLBACK_PATH,
+  AUTH_COMPLETE_PATH,
+  TRELLO_POWER_UP_ADMIN_URL,
   TrelloApiError,
   BOARD_CARD_LIMIT,
+  authFault,
+  callbackPageResponse,
   cardStateCategory,
+  createCompleteAuthHandler,
+  createNonceStore,
   createTrelloApi,
   isAuthError,
+  resolveTrelloApiKey,
+  trelloAuthCallbackUrl,
+  trelloAuthorizeUrl,
+  trelloCallbackOrigin,
+  type CredentialFault,
   type TrelloApi,
   type TrelloAttachment,
   type TrelloCard,
@@ -87,15 +99,41 @@ export default async function plugin(bb: BbPluginApi) {
     }
   }
 
+  /**
+   * The credentials in force.
+   *
+   * The token is always the user's own. The key is the user's own when there
+   * is one — the `api-key` secret, written by the connection form or
+   * `--key-file` — and otherwise the bundled application key, which is a
+   * public identifier rather than a secret (see trello/app-key.ts). Both are
+   * null when there is nothing at all, which every caller already handles.
+   */
   async function readCredentials(): Promise<{
     apiKey: string | null;
     apiToken: string | null;
+    keyIsBundled: boolean;
   }> {
-    const [apiKey, apiToken] = await Promise.all([
+    const [userKey, apiToken] = await Promise.all([
       readSecret(keyPath),
       readSecret(tokenPath)
     ]);
-    return { apiKey, apiToken };
+    const apiKey = resolveTrelloApiKey(userKey);
+    return {
+      apiKey,
+      apiToken,
+      keyIsBundled: (userKey?.trim() ?? '') === '' && apiKey !== null
+    };
+  }
+
+  /** BB's own origin — what Trello's redirect has to be allowed to reach. */
+  function callbackOrigin(): string {
+    try {
+      return trelloCallbackOrigin(bb.server.loopbackBaseUrl);
+    } catch {
+      // loopbackBaseUrl is bind-gated; before the server listens there is no
+      // origin to report and the connection view still has to render.
+      return '';
+    }
   }
 
   // One API client per credential pair. Rebuilt whenever the connection
@@ -119,7 +157,16 @@ export default async function plugin(bb: BbPluginApi) {
   function safeMessage(error: unknown): string {
     if (error instanceof TrelloApiError) {
       if (isAuthError(error)) {
-        return 'Trello rejected the API key or token. Update the connection.';
+        // Trello's 401 names the offending half; saying which one is the whole
+        // difference between a two-minute fix and an afternoon.
+        switch (authFault(error)) {
+          case 'key':
+            return `Trello rejected the API key. Check it on ${TRELLO_POWER_UP_ADMIN_URL}, and that ${callbackOrigin() || "BB's address"} is one of that key's allowed origins.`;
+          case 'token':
+            return 'Trello rejected the API token. Connect Trello again to mint a new one.';
+          default:
+            return 'Trello rejected the API key or token. Update the connection.';
+        }
       }
       return `Trello request failed${
         error.status === null ? '' : ` (HTTP ${error.status})`
@@ -146,35 +193,39 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   async function connectionView(): Promise<ConnectionView> {
-    const { apiKey, apiToken } = await readCredentials();
-    const configured = apiKey !== null && apiToken !== null;
-    if (!configured) {
+    const { apiKey, apiToken, keyIsBundled } = await readCredentials();
+    const keyConfigured = apiKey !== null;
+    const tokenConfigured = apiToken !== null;
+    const base = {
+      configured: keyConfigured && tokenConfigured,
+      keyConfigured,
+      tokenConfigured,
+      keyIsBundled,
+      callbackOrigin: callbackOrigin(),
+      viewerName: null,
+      memberId: '',
+      available: false,
+      invalidCredential: null as CredentialFault
+    };
+
+    if (!base.configured) {
       return {
-        configured: false,
-        viewerName: null,
-        memberId: '',
-        available: false,
-        message:
-          apiKey === null && apiToken === null
-            ? 'Add a Trello API key and token to connect.'
-            : apiKey === null
-              ? 'Add a Trello API key to connect.'
-              : 'Add a Trello API token to connect.'
+        ...base,
+        message: !keyConfigured
+          ? `No Trello API key is available. Create a Power-Up on ${TRELLO_POWER_UP_ADMIN_URL}, then paste its API key below.`
+          : 'Connect Trello to authorise this install and mint an API token.'
       };
     }
     try {
       const member = await viewerMember();
       if (member === null) {
         return {
-          configured,
-          viewerName: null,
-          memberId: '',
-          available: false,
+          ...base,
           message: 'Trello did not return a member for this token.'
         };
       }
       return {
-        configured,
+        ...base,
         viewerName: member.name,
         memberId: member.id,
         available: true,
@@ -182,10 +233,8 @@ export default async function plugin(bb: BbPluginApi) {
       };
     } catch (error) {
       return {
-        configured,
-        viewerName: null,
-        memberId: '',
-        available: false,
+        ...base,
+        invalidCredential: authFault(error),
         message: safeMessage(error)
       };
     }
@@ -200,6 +249,66 @@ export default async function plugin(bb: BbPluginApi) {
     }
     return api;
   }
+
+  // -------------------------------------------------------------------------
+  // Browser authorization (see trello/browser-auth.ts for the threat model)
+  // -------------------------------------------------------------------------
+
+  /** Pending "Connect Trello" attempts: single-use, 5 minute TTL, bounded. */
+  const pendingAuth = createNonceStore();
+
+  /**
+   * The page Trello's redirect lands on. `auth: "none"` because a redirect
+   * from trello.com is a plain browser navigation and cannot carry BB's own
+   * auth. It answers one fixed byte string and touches nothing — the token is
+   * in the URL fragment, which never reaches this server at all.
+   */
+  bb.http.route(
+    'GET',
+    AUTH_CALLBACK_PATH,
+    () => callbackPageResponse(),
+    { auth: 'none' }
+  );
+
+  const completeAuth = createCompleteAuthHandler({
+    nonces: pendingAuth,
+    resolveApiKey: async () => (await readCredentials()).apiKey ?? '',
+    createApi: credentials => createTrelloApi(credentials),
+    saveToken: async token => {
+      // Only reached once Trello has confirmed the token works. The key is
+      // deliberately NOT written: leaving it absent is what keeps the bundled
+      // default in force and a user-supplied key overriding it.
+      await writeSecretFile(tokenPath, token);
+      invalidateConnection();
+      for (const projectId of store.configuredProjectIds()) {
+        advanceRevision(projectId);
+      }
+      const connection = await connectionView();
+      // Publishing here is what makes an open panel update live rather than
+      // leaving the user to work out that they have to hit refresh.
+      bb.realtime.publish(CONNECTION_CHANGED, {
+        configured: connection.configured
+      });
+    },
+    log: message => bb.log.info(message)
+  });
+
+  /**
+   * Where the callback page posts the token it read out of the fragment.
+   *
+   * `auth: "local"` — the strictest mode that works, since the caller is our
+   * own same-origin page. It costs a foreign page the ability to reach this at
+   * all: a form cannot send `application/json`, and a `fetch` that does forces
+   * a preflight BB answers 403 for a non-local origin. The state nonce is the
+   * second, independent barrier, and the only one that holds against something
+   * already running on this machine.
+   */
+  bb.http.route(
+    'POST',
+    AUTH_COMPLETE_PATH,
+    context => completeAuth(context.req.raw),
+    { auth: 'local' }
+  );
 
   /** Drops both cached credentials-derived objects after a connection change. */
   function invalidateConnection(): void {
@@ -480,6 +589,27 @@ export default async function plugin(bb: BbPluginApi) {
         configured: connection.configured
       });
       return { connection };
+    },
+    beginTrelloAuth: async () => {
+      const { apiKey } = await readCredentials();
+      if (apiKey === null) {
+        // Defence in depth: the panel hides Connect when there is no key.
+        throw new Error(
+          `No Trello API key is available. Create a Power-Up on ${TRELLO_POWER_UP_ADMIN_URL} and paste its API key into the connection form.`
+        );
+      }
+      const state = pendingAuth.issue();
+      return {
+        authorizeUrl: trelloAuthorizeUrl({
+          apiKey,
+          returnUrl: trelloAuthCallbackUrl(
+            bb.server.loopbackBaseUrl,
+            bb.pluginId,
+            state
+          )
+        }),
+        callbackOrigin: callbackOrigin()
+      };
     },
     status: async ({ projectId }) => ({ status: store.syncStatus(projectId) }),
     listItems: async ({ projectId, query, stateCategories, limit }) => ({
@@ -763,14 +893,17 @@ export default async function plugin(bb: BbPluginApi) {
     threadId: string,
     signal: AbortSignal | undefined
   ): Promise<ConnectionView | null> {
-    const { apiKey, apiToken } = await readCredentials();
+    const { apiKey, apiToken, keyIsBundled } = await readCredentials();
     const result = await bb.ui.requestInput(
       {
         threadId,
         rendererId: 'trello-connection',
         title: 'Connect Trello',
         payload: {
-          keyConfigured: apiKey !== null,
+          // The bundled key does not count as "configured" for a form whose
+          // key field offers to REPLACE what the user supplied; there is
+          // nothing of theirs to replace.
+          keyConfigured: apiKey !== null && !keyIsBundled,
           tokenConfigured: apiToken !== null
         }
       },
@@ -809,7 +942,8 @@ export default async function plugin(bb: BbPluginApi) {
     '  bb trello config [--project <proj_id>] [--board <id>]',
     '                   [--assigned-to-me <on|off>] [--include-closed <on|off>] [--json]',
     '  bb trello connect [--json]',
-    '  bb trello connect --key-file <path> --token-file <path>',
+    '  bb trello connect --browser [--json]',
+    '  bb trello connect --key-file <path> [--token-file <path>]',
     '  bb trello disconnect [--json]',
     '  bb trello presets list [--project <proj_id>] [--json]'
   ].join('\n');
@@ -889,9 +1023,9 @@ export default async function plugin(bb: BbPluginApi) {
       {
         name: 'connect',
         summary:
-          'Show the Trello connection, or set it with --key-file and --token-file',
+          'Show the Trello connection, print a browser authorization URL (--browser), or set credentials from files',
         usage:
-          'bb trello connect [--key-file <path> --token-file <path>] [--json]'
+          'bb trello connect [--browser] [--key-file <path>] [--token-file <path>] [--json]'
       },
       {
         name: 'disconnect',
@@ -932,6 +1066,10 @@ export default async function plugin(bb: BbPluginApi) {
           case 'disconnect': {
             await deleteSecretFile(keyPath);
             await deleteSecretFile(tokenPath);
+            // Any half-finished browser authorization dies with the
+            // connection; otherwise a nonce minted before the disconnect could
+            // still write a token back afterwards.
+            pendingAuth.clear();
             invalidateConnection();
             const connection = await connectionView();
             bb.realtime.publish(CONNECTION_CHANGED, { configured: false });
@@ -949,17 +1087,50 @@ export default async function plugin(bb: BbPluginApi) {
             // as query parameters.
             const keyFile = flagValue(args, '--key-file');
             const tokenFile = flagValue(args, '--token-file');
-            if (keyFile !== null || tokenFile !== null) {
-              if (keyFile === null || tokenFile === null) {
+
+            if (args.includes('--browser')) {
+              // A plugin CLI command runs inside the BB server, which has no
+              // browser to open, so the URL is printed for the user to paste.
+              // The panel's Connect button is the one-click version.
+              const { apiKey } = await readCredentials();
+              if (apiKey === null) {
                 return fail(
-                  'Pass both --key-file <path> and --token-file <path>.'
+                  `No Trello API key is available. Create a Power-Up on ${TRELLO_POWER_UP_ADMIN_URL}, then run:\n` +
+                    '  bb trello connect --key-file <path-to-a-file-with-the-key>'
                 );
               }
+              const origin = callbackOrigin();
+              const authorizeUrl = trelloAuthorizeUrl({
+                apiKey,
+                returnUrl: trelloAuthCallbackUrl(
+                  bb.server.loopbackBaseUrl,
+                  bb.pluginId,
+                  pendingAuth.issue()
+                )
+              });
+              return reply(
+                { authorizeUrl, callbackOrigin: origin },
+                [
+                  'Open this URL in a browser and approve the request (the link is valid for 5 minutes):',
+                  '',
+                  `  ${authorizeUrl}`,
+                  '',
+                  `Trello only redirects to origins allowlisted on the API key, so ${origin} must be`,
+                  `listed under "Allowed origins" on the key's tab at ${TRELLO_POWER_UP_ADMIN_URL}.`
+                ].join('\n')
+              );
+            }
+
+            if (keyFile !== null || tokenFile !== null) {
+              // Either alone is legitimate now: the key and the token have
+              // separate sources — a key can be pasted for the browser flow to
+              // use, and the browser flow writes only the token.
               const credentials: Record<string, string> = {};
               for (const [label, file] of [
                 ['API key', keyFile],
                 ['API token', tokenFile]
               ] as const) {
+                if (file === null) continue;
                 let value: string;
                 try {
                   value = (await readFile(file, 'utf8')).trim();
@@ -972,8 +1143,12 @@ export default async function plugin(bb: BbPluginApi) {
                 }
                 credentials[label] = value;
               }
-              await writeSecretFile(keyPath, credentials['API key']!);
-              await writeSecretFile(tokenPath, credentials['API token']!);
+              if (credentials['API key'] !== undefined) {
+                await writeSecretFile(keyPath, credentials['API key']);
+              }
+              if (credentials['API token'] !== undefined) {
+                await writeSecretFile(tokenPath, credentials['API token']);
+              }
               invalidateConnection();
               const saved = await connectionView();
               bb.realtime.publish(CONNECTION_CHANGED, {
@@ -999,7 +1174,9 @@ export default async function plugin(bb: BbPluginApi) {
                       ? ''
                       : ` — ${connection.message ?? 'unavailable'}`
                   }`
-                : 'Not connected. Open the Trello panel in BB, or run:\n'
+                : 'Not connected. Click "Connect Trello" in the Trello panel, or run:\n'
+                  + '  bb trello connect --browser\n'
+                  + 'Headless alternative:\n'
                   + '  bb trello connect --key-file <path> --token-file <path>'
             );
           }

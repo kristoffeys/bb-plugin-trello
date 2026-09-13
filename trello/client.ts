@@ -70,6 +70,33 @@ export function isAuthError(error: unknown): boolean {
   return error instanceof TrelloApiError && error.status === 401
 }
 
+/** Which half of the credential pair Trello rejected, when its body says. */
+export type CredentialFault = 'key' | 'token' | null
+
+/**
+ * Trello's 401 body names the offending credential — "invalid key" versus
+ * "invalid token" — which is the difference between "the Power-Up key is
+ * wrong" and "reconnect to mint a new token". Without this the UI can only say
+ * "one of these two is wrong", which is the ambiguity that costs people an
+ * afternoon.
+ *
+ * Reads `error.message`, which the transport has ALREADY scrubbed, so no
+ * credential can be reached through here.
+ */
+export function authFault(error: unknown): CredentialFault {
+  if (!isAuthError(error)) return null
+  const message = (error as TrelloApiError).message
+  if (/invalid\s+(app\s+)?key/iu.test(message)) return 'key'
+  // "unauthorized permission requested" is what a token lacking a scope gets;
+  // the key is fine in that case.
+  if (
+    /invalid\s+(app\s+)?token|token\s+not\s+valid|unauthorized permission/iu.test(message)
+  ) {
+    return 'token'
+  }
+  return null
+}
+
 /** Redacts `key=`/`token=` values in any URL that reaches a message. */
 export function stripCredentialQueryParams(message: string): string {
   return message.replace(

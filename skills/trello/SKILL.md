@@ -47,8 +47,10 @@ Useful flags:
 1. Run `bb trello status` first when the user's request depends on the board
    being connected. If it reports no mapping, tell the user to map the bb
    project to a Trello board — do not guess one. If `bb trello connect` reports
-   "Not connected", ask the user to connect; never ask them to paste an API key
-   or token into the conversation.
+   "Not connected", tell the user to click "Connect Trello" in the Trello panel
+   (or to run `bb trello connect --browser` and open the URL it prints, which
+   is valid for five minutes). Never ask them to paste an API key or token into
+   the conversation.
 2. Run `bb trello list` before acting on cards and use the locators it prints.
    Never guess a locator or a list id.
 3. Before `move` or `create`, run `bb trello lists` and pick a list id from that

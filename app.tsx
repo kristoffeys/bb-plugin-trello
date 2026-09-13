@@ -113,6 +113,9 @@ import {
   type WorkStatusOption
 } from './contract.js';
 import { FILTER_PRESET_NAME_MAX_LENGTH } from './filter-presets.js';
+// Straight from app-key.js, not the trello/ barrel: the barrel pulls in the
+// transport and node:crypto, neither of which belongs in the app bundle.
+import { TRELLO_POWER_UP_ADMIN_URL } from './trello/app-key.js';
 import {
   DEFAULT_WORKFLOW_STATUS_ORDER,
   assigneeAvatarIdentity,
@@ -3125,11 +3128,14 @@ function secretMutation(value: string, remove: boolean): SecretMutation {
 function CredentialStatus({
   configured,
   hasDraft,
-  remove
+  remove,
+  rejected = false
 }: {
   configured: boolean;
   hasDraft: boolean;
   remove: boolean;
+  /** Trello's 401 named THIS credential — not merely "one of the two". */
+  rejected?: boolean;
 }) {
   const label = remove
     ? 'Removal queued'
@@ -3137,20 +3143,29 @@ function CredentialStatus({
       ? configured
         ? 'Replacement ready'
         : 'Ready'
-      : configured
-        ? 'Configured'
-        : 'Not configured';
+      : rejected
+        ? 'Rejected by Trello'
+        : configured
+          ? 'Configured'
+          : 'Not configured';
+  const tone = rejected && !remove && !hasDraft
+    ? 'border-destructive/30 bg-destructive/10 text-destructive'
+    : configured && !remove
+      ? 'border-success/30 bg-success/10 text-success'
+      : 'text-muted-foreground';
+  const dot = rejected && !remove && !hasDraft
+    ? 'bg-destructive'
+    : configured && !remove
+      ? 'bg-success'
+      : 'bg-muted-foreground/60';
   return (
     <span
       className={cn(
         'tb-status-pill inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium',
-        configured && !remove ? 'border-success/30 bg-success/10 text-success' : 'text-muted-foreground'
+        tone
       )}
     >
-      <span
-        aria-hidden
-        className={cn('size-1.5 rounded-full', configured && !remove ? 'bg-success' : 'bg-muted-foreground/60')}
-      />
+      <span aria-hidden className={cn('size-1.5 rounded-full', dot)} />
       {label}
     </span>
   );
@@ -3169,6 +3184,7 @@ function CredentialStatus({
 function ConnectionForm({
   keyConfigured,
   tokenConfigured,
+  invalidCredential = null,
   busy,
   error,
   onSubmit,
@@ -3176,6 +3192,8 @@ function ConnectionForm({
 }: {
   keyConfigured: boolean;
   tokenConfigured: boolean;
+  /** Which half Trello rejected, so the badge lands on the right field. */
+  invalidCredential?: 'key' | 'token' | null;
   busy: boolean;
   error: string | null;
   onSubmit: (mutation: ConnectionMutation) => void;
@@ -3195,7 +3213,8 @@ function ConnectionForm({
     setDraft: (value: string) => void,
     configured: boolean,
     remove: boolean,
-    setRemove: (update: (value: boolean) => boolean) => void
+    setRemove: (update: (value: boolean) => boolean) => void,
+    rejected: boolean
   ) => (
     <div className="rounded-lg border border-border bg-card p-3">
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -3206,6 +3225,7 @@ function ConnectionForm({
           configured={configured}
           hasDraft={draft.trim() !== ''}
           remove={remove}
+          rejected={rejected}
         />
       </div>
       <Input
@@ -3251,17 +3271,18 @@ function ConnectionForm({
       }}
     >
       <p className="text-xs text-muted-foreground">
-        Get the API key from{' '}
+        Only needed if you are not using the Connect button, or if you would rather
+        authorise with your own Power-Up. Both come from{' '}
         <a
-          href="https://trello.com/power-ups/admin"
+          href={TRELLO_POWER_UP_ADMIN_URL}
           target="_blank"
           rel="noreferrer"
           className="underline underline-offset-2"
         >
           trello.com/power-ups/admin
         </a>
-        , then use that key's “Token” link to authorise this install and copy the token it
-        shows you.
+        : the API key is on the Power-Up's “API key” tab, and that key's “Token” link
+        mints a token to paste here.
       </p>
 
       {credentialField(
@@ -3272,7 +3293,8 @@ function ConnectionForm({
         setKeyDraft,
         keyConfigured,
         removeKey,
-        setRemoveKey
+        setRemoveKey,
+        invalidCredential === 'key'
       )}
       {credentialField(
         `${formId}-token`,
@@ -3282,7 +3304,8 @@ function ConnectionForm({
         setTokenDraft,
         tokenConfigured,
         removeToken,
-        setRemoveToken
+        setRemoveToken,
+        invalidCredential === 'token'
       )}
 
       {error ? (
@@ -3307,10 +3330,34 @@ function ConnectionForm({
 
 function ConnectionSection() {
   const rpc = useRpc<TrelloRpcContract>();
+  const navigate = useBbNavigate();
   const [connection, setConnection] = useState<ConnectionView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  /**
+   * One click: the server mints a single-use nonce and returns the Trello
+   * authorize URL; the token comes back to a local callback route, never
+   * through this component. The panel updates itself from the
+   * CONNECTION_CHANGED signal the server publishes once it lands.
+   */
+  const beginAuth = useCallback(async () => {
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      const { authorizeUrl } = await rpc.call('beginTrelloAuth', null);
+      if (!navigate.openUrl(authorizeUrl)) {
+        setAuthError('BB could not open a browser for the Trello approval page.');
+      }
+    } catch (nextError) {
+      setAuthError(describeError(nextError));
+    } finally {
+      setAuthBusy(false);
+    }
+  }, [navigate, rpc]);
 
   const load = useCallback(async () => {
     try {
@@ -3352,18 +3399,78 @@ function ConnectionSection() {
     <div className="tb-settings-card space-y-4 rounded-xl border p-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-semibold">Trello connection</h3>
-        <CredentialStatus configured={connection.configured} hasDraft={false} remove={false} />
+        <CredentialStatus
+          configured={connection.available}
+          hasDraft={false}
+          remove={false}
+          rejected={connection.invalidCredential !== null}
+        />
       </div>
       <p className="text-sm text-muted-foreground">
         {connection.configured
           ? connection.available
             ? `Connected to Trello${connection.viewerName ? ` as ${connection.viewerName}` : ''}.`
             : (connection.message ?? 'Connection is not available.')
-          : 'Add a Trello API key and token to connect this bb install. One connection serves every bb project.'}
+          : (connection.message ??
+            'Connect Trello to authorise this bb install. One connection serves every bb project.')}
       </p>
+
+      {connection.keyConfigured ? (
+        <div className="space-y-2">
+          <Button
+            type="button"
+            size="sm"
+            disabled={authBusy}
+            onClick={() => void beginAuth()}
+          >
+            {authBusy
+              ? 'Opening Trello…'
+              : connection.available
+                ? 'Reconnect Trello'
+                : 'Connect Trello'}
+          </Button>
+          <p className="text-xs text-muted-foreground">
+            Opens Trello in your browser to approve access. Trello only redirects back
+            to origins allowlisted on the API key, so{' '}
+            <code className="rounded bg-muted px-1 py-0.5">
+              {connection.callbackOrigin || 'this bb server’s address'}
+            </code>{' '}
+            must be listed under “Allowed origins” on that key's tab.
+          </p>
+          {authError ? (
+            <p role="alert" className="text-sm text-destructive">
+              {authError}
+            </p>
+          ) : null}
+        </div>
+      ) : (
+        <div className="rounded-lg border border-border bg-muted/30 p-3">
+          <p className="text-sm">
+            A Trello API key is needed before this install can connect.
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Create (or open) a Power-Up on{' '}
+            <a
+              href={TRELLO_POWER_UP_ADMIN_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="underline underline-offset-2"
+            >
+              trello.com/power-ups/admin
+            </a>
+            , copy the key from its “API key” tab, add{' '}
+            <code className="rounded bg-muted px-1 py-0.5">
+              {connection.callbackOrigin || 'this bb server’s address'}
+            </code>{' '}
+            to that key's allowed origins, and paste the key below.
+          </p>
+        </div>
+      )}
+
       <ConnectionForm
-        keyConfigured={connection.configured}
-        tokenConfigured={connection.configured}
+        keyConfigured={connection.keyConfigured && !connection.keyIsBundled}
+        tokenConfigured={connection.tokenConfigured}
+        invalidCredential={connection.invalidCredential}
         busy={busy}
         error={saveError}
         onSubmit={mutation => {

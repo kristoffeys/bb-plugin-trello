@@ -27,7 +27,8 @@ export const VALUE_FLAGS: ReadonlySet<string> = new Set([
 export const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   '--json',
   '--cached',
-  '--worktree'
+  '--worktree',
+  '--browser'
 ]);
 
 export function flagValue(argv: readonly string[], flag: string): string | null {

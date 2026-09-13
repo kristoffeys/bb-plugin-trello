@@ -21,35 +21,98 @@ builds the server and app bundles.
 ## Setup
 
 Trello authenticates with a **pair** of credentials — an application API key
-and a per-user token — and both are required on every request.
+and a per-user token — and both are required on every request. The API key is
+an application identifier; only the token is per-user. So the key is set up
+once, and connecting is then one click.
 
-1. Open **https://trello.com/power-ups/admin**, create (or open) a Power-Up,
-   and generate an **API key** on its *API key* tab.
-2. On that same page, follow the **Token** link. It opens a
-   `https://trello.com/1/authorize?...` page that asks you to grant the Power-Up
-   access to your boards; approving it prints the **API token**.
-3. Enter both in the Trello panel in BB. Headless alternative:
+### One-click (the normal path)
+
+1. Click **Connect Trello** in the Trello panel. BB opens Trello in your
+   browser, you approve the request, and the token is stored for you — you
+   never see or paste it.
+2. Map the BB project to a Trello board in the panel's manage view.
+
+Headless equivalent, which prints the URL for you to open yourself:
+
+```
+bb trello connect --browser
+```
+
+### Providing the API key
+
+This repo ships an API key in `trello/app-key.ts`. If that constant is empty
+(or you would rather authorise against your own Power-Up), the panel asks for a
+key and links you to the right page. To create one:
+
+1. Open **https://trello.com/power-ups/admin** and create (or open) a Power-Up.
+2. Copy the key from its **API key** tab.
+3. On that same tab, add BB's own origin — shown in the connection panel and by
+   `bb trello connect --browser`, e.g. `http://127.0.0.1:38886` — under
+   **Allowed origins**. Trello blocks the authorization redirect otherwise:
+   *"If your API key has no allowed origins set, then no redirect URL will
+   work."* This is the step that is easy to miss; without it Trello answers
+   `400 Invalid return_url`.
+4. Paste the key into the panel, or:
 
    ```
-   bb trello connect --key-file <path-to-a-file-with-the-key> \
-                     --token-file <path-to-a-file-with-the-token>
+   bb trello connect --key-file <path-to-a-file-with-the-key>
    ```
 
-   A plugin CLI command runs inside the BB server, so it has no stdin to pipe a
-   secret through — both credentials are passed as file paths so they never land
-   in argv, shell history, or an agent transcript. Delete the files afterwards.
-4. Map the BB project to a Trello board in the panel's manage view, or from the
-   shell:
+A key you supply always overrides the bundled one.
 
-   ```
-   bb trello config --board <trello-board-id>
-   ```
+### Fully manual (scripted or headless installs)
+
+The original copy-paste path still works, and is the way to script this:
+
+```
+bb trello connect --key-file <path-to-a-file-with-the-key> \
+                  --token-file <path-to-a-file-with-the-token>
+```
+
+A plugin CLI command runs inside the BB server, so it has no stdin to pipe a
+secret through — both credentials are passed as file paths so they never land
+in argv, shell history, or an agent transcript. Delete the files afterwards.
+Either flag may be given on its own. To mint a token by hand, follow the
+**Token** link on the Power-Up's API key tab.
+
+Then map the BB project to a Trello board in the panel's manage view, or from
+the shell:
+
+```
+bb trello config --board <trello-board-id>
+```
 
 Both credentials are stored in `0600` files under the plugin's data directory,
-not in plugin settings, so changing them does not require a plugin reload. The
-API key is treated as a secret alongside the token because Trello sends both as
-**query parameters** — a leaked key is as good as a leaked header, and the
-plugin scrubs `key=`/`token=` out of every error message it produces.
+not in plugin settings, so changing them does not require a plugin reload. A
+user-supplied key is kept out of error messages alongside the token because
+Trello sends both as **query parameters**, and the plugin scrubs
+`key=`/`token=` out of every error message it produces.
+
+`bb trello disconnect` removes the stored key and token and cancels any
+authorization that is still in flight.
+
+### How the browser flow works, and why it is safe
+
+Trello has no OAuth 2.0 and returns the minted token in the **URL fragment**,
+which browsers never send to a server. So the callback route serves a small
+static page whose script reads the token out of `location.hash` and posts it
+back to BB. Two routes are involved, and the reasoning is written out in
+`trello/browser-auth.ts`:
+
+- `GET …/http/auth/callback` is unauthenticated, because a redirect from
+  trello.com is a plain browser navigation that cannot carry BB's auth. It
+  answers one fixed byte string, reflects nothing from the request, and reads
+  and writes nothing.
+- `POST …/http/auth/complete` is the route that can write a credential, so it
+  uses BB's `local` auth — a foreign page cannot reach it, since a form cannot
+  send `application/json` and a `fetch` that does forces a preflight BB refuses
+  for a non-local origin. On top of that, every callback must present a
+  single-use state nonce (32 random bytes, 5 minute TTL, compared in constant
+  time). That nonce is the barrier against anything else already running on the
+  machine, so it is checked before the token is even looked at.
+
+The token is verified against `GET /1/members/me` before it is stored, and no
+token ever appears in a response body, an error message, or a log line.
 
 There is no "who am I" field to fill in: the connected member is resolved from
 `GET /1/members/me`, which is what powers the "only show cards I am a member of"

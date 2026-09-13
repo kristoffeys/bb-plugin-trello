@@ -134,7 +134,25 @@ export type TrackerProject = z.infer<typeof trackerProjectSchema>;
 
 export const connectionViewSchema = z
   .object({
+    /** Both halves present. What every "can we call Trello at all" site asks. */
     configured: z.boolean(),
+    /**
+     * An API key is in force — the user's own, or the bundled application key.
+     * Split from `tokenConfigured` because the two halves fail independently:
+     * one flag for both could only ever say "something is wrong".
+     */
+    keyConfigured: z.boolean(),
+    /** A user token has been stored. */
+    tokenConfigured: z.boolean(),
+    /** The key in force is the bundled default rather than a pasted one. */
+    keyIsBundled: z.boolean(),
+    /** Which half Trello rejected, when its 401 said. */
+    invalidCredential: z.enum(['key', 'token']).nullable(),
+    /**
+     * BB's own origin, which must be listed in the API key's allowed origins
+     * on trello.com or Trello blocks the authorization redirect.
+     */
+    callbackOrigin: z.string(),
     /** Resolved from GET /1/members/me, so the user never types it. */
     viewerName: z.string().nullable(),
     memberId: z.string(),
@@ -404,6 +422,22 @@ export const trelloRpcContract = defineRpcContract({
   saveConnection: {
     input: connectionMutationSchema,
     output: z.object({ connection: connectionViewSchema }).strict()
+  },
+  /**
+   * Mint a single-use state nonce and hand back the Trello authorize URL for
+   * the frontend to open. The URL carries the API key, which is a public
+   * application identifier; the token it mints comes back to a local callback
+   * route, never through this response.
+   */
+  beginTrelloAuth: {
+    input: z.null(),
+    output: z
+      .object({
+        authorizeUrl: z.string(),
+        /** Shown to the user when Trello blocks the redirect. */
+        callbackOrigin: z.string()
+      })
+      .strict()
   },
   status: {
     input: z.object({ projectId: bbProjectIdSchema }).strict(),
