@@ -44,6 +44,27 @@ export const DEFAULT_TRELLO_API_KEY = '';
 export const TRELLO_POWER_UP_ADMIN_URL = 'https://trello.com/power-ups/admin';
 
 /**
+ * What to tell the user once the offending credential is known.
+ *
+ * The token case deliberately says nothing about allowed origins: that is a
+ * separate failure, and mentioning it here sends the user to the Power-Up
+ * admin page when all they need is to reconnect.
+ */
+export function authFaultMessage(
+  fault: 'key' | 'token' | null,
+  callbackOrigin: string
+): string {
+  switch (fault) {
+    case 'key':
+      return `Trello rejected the API key. Check it on ${TRELLO_POWER_UP_ADMIN_URL}, and that ${callbackOrigin || "BB's address"} is one of that key's allowed origins.`
+    case 'token':
+      return 'Trello rejected the API token — it is invalid or expired. Connect Trello again to mint a new one.'
+    default:
+      return 'Trello rejected the API key or token. Update the connection.'
+  }
+}
+
+/**
  * Which API key is in force. A user-supplied key always wins over the bundled
  * default; null means there is no key at all, which is the state the UI has to
  * ask the user to fix.

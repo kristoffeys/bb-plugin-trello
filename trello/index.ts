@@ -4,6 +4,7 @@ export { createTrelloApi, type TrelloApi } from './api'
 export {
   TrelloApiError,
   authFault,
+  diagnoseCredentialFault,
   isAuthError,
   isRateLimited,
   stripCredentialQueryParams,
@@ -13,6 +14,7 @@ export {
 export {
   DEFAULT_TRELLO_API_KEY,
   TRELLO_POWER_UP_ADMIN_URL,
+  authFaultMessage,
   resolveTrelloApiKey
 } from './app-key'
 export {

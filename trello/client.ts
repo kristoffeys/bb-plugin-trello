@@ -73,6 +73,8 @@ export function isAuthError(error: unknown): boolean {
 /** Which half of the credential pair Trello rejected, when its body says. */
 export type CredentialFault = 'key' | 'token' | null
 
+const INVALID_KEY_PATTERN = /invalid\s+(app\s+)?key/iu
+
 /**
  * Trello's 401 body names the offending credential — "invalid key" versus
  * "invalid token" — which is the difference between "the Power-Up key is
@@ -86,7 +88,7 @@ export type CredentialFault = 'key' | 'token' | null
 export function authFault(error: unknown): CredentialFault {
   if (!isAuthError(error)) return null
   const message = (error as TrelloApiError).message
-  if (/invalid\s+(app\s+)?key/iu.test(message)) return 'key'
+  if (INVALID_KEY_PATTERN.test(message)) return 'key'
   // "unauthorized permission requested" is what a token lacking a scope gets;
   // the key is fine in that case.
   if (
@@ -103,6 +105,48 @@ export function stripCredentialQueryParams(message: string): string {
     /([?&])(key|token)=[^&\s"'<>)\]]*/giu,
     (_match, separator: string, name: string) => `${separator}${name}=[redacted]`
   )
+}
+
+/**
+ * Trello's verdict on which credential is wrong, corrected by one extra probe.
+ *
+ * Why: a token that does not belong to the key is reported as "invalid key" —
+ * the same key on its own answers "invalid token" (400). Taking the 401 at
+ * face value sends the user off to regenerate the credential that was fine, so
+ * when both are configured and Trello blames the key, ask once more with the
+ * key alone: still "invalid key" means the key really is bad, anything else
+ * means the key is good and the token is the stale half.
+ *
+ * One request, no retry: a probe that cannot decide (unreachable, rate
+ * limited) keeps Trello's original verdict rather than inventing one.
+ */
+export async function diagnoseCredentialFault(
+  error: unknown,
+  credentials: TrelloCredentials,
+  options?: { fetchImpl?: typeof fetch }
+): Promise<CredentialFault> {
+  const fault = authFault(error)
+  const apiKey = credentials.apiKey.trim()
+  if (fault !== 'key' || apiKey === '' || credentials.apiToken.trim() === '') {
+    return fault
+  }
+  const doFetch = options?.fetchImpl ?? globalThis.fetch
+  if (typeof doFetch !== 'function') return fault
+  try {
+    const response = await doFetch(
+      withQueryParams(`${TRELLO_API_BASE}/members/me`, { key: apiKey }),
+      { headers: { Accept: 'application/json' } }
+    )
+    if (response.ok) return 'token'
+    const body = stripCredentialQueryParams(
+      (await readTrelloError(response)).split(apiKey).join('[redacted]')
+    )
+    // A rate-limited probe says nothing about the credentials.
+    if (isRateLimited(new TrelloApiError(body, response.status))) return fault
+    return INVALID_KEY_PATTERN.test(body) ? 'key' : 'token'
+  } catch {
+    return fault
+  }
 }
 
 export type RequestInitLite = { method?: string; body?: string }

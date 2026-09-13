@@ -52,11 +52,13 @@ import {
   TrelloApiError,
   BOARD_CARD_LIMIT,
   authFault,
+  authFaultMessage,
   callbackPageResponse,
   cardStateCategory,
   createCompleteAuthHandler,
   createNonceStore,
   createTrelloApi,
+  diagnoseCredentialFault,
   isAuthError,
   resolveTrelloApiKey,
   trelloAuthCallbackUrl,
@@ -154,19 +156,16 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   /** Never let an upstream error text reach a caller verbatim. */
-  function safeMessage(error: unknown): string {
+  function safeMessage(
+    error: unknown,
+    fault: CredentialFault = authFault(error)
+  ): string {
     if (error instanceof TrelloApiError) {
       if (isAuthError(error)) {
         // Trello's 401 names the offending half; saying which one is the whole
-        // difference between a two-minute fix and an afternoon.
-        switch (authFault(error)) {
-          case 'key':
-            return `Trello rejected the API key. Check it on ${TRELLO_POWER_UP_ADMIN_URL}, and that ${callbackOrigin() || "BB's address"} is one of that key's allowed origins.`;
-          case 'token':
-            return 'Trello rejected the API token. Connect Trello again to mint a new one.';
-          default:
-            return 'Trello rejected the API key or token. Update the connection.';
-        }
+        // difference between a two-minute fix and an afternoon. `fault` may be
+        // the probe-corrected verdict — see diagnoseCredentialFault.
+        return authFaultMessage(fault, callbackOrigin());
       }
       return `Trello request failed${
         error.status === null ? '' : ` (HTTP ${error.status})`
@@ -232,10 +231,14 @@ export default async function plugin(bb: BbPluginApi) {
         message: null
       };
     } catch (error) {
+      const fault = await diagnoseCredentialFault(error, {
+        apiKey: apiKey ?? '',
+        apiToken: apiToken ?? ''
+      });
       return {
         ...base,
-        invalidCredential: authFault(error),
-        message: safeMessage(error)
+        invalidCredential: fault,
+        message: safeMessage(error, fault)
       };
     }
   }
