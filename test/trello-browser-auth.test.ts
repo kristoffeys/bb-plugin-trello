@@ -173,23 +173,33 @@ describe('state nonce', () => {
 // ---------------------------------------------------------------------------
 
 describe('token shape', () => {
-  test('accepts 64 hex characters', () => {
+  test('accepts the legacy 64-hex form', () => {
     expect(isTrelloToken(TOKEN)).toBe(true);
     expect(isTrelloToken('0123456789abcdef'.repeat(4))).toBe(true);
     expect(isTrelloToken('0123456789ABCDEF'.repeat(4))).toBe(true);
   });
 
-  test('rejects everything else', () => {
-    expect(isTrelloToken(`${'a'.repeat(63)}`)).toBe(false);
-    expect(isTrelloToken(`${'a'.repeat(65)}`)).toBe(false);
-    expect(isTrelloToken(`${'a'.repeat(63)}z`)).toBe(false);
+  // Why: pinning the hex form rejected a real token minted by the browser
+  // flow with "unexpected format". Trello does not document its token
+  // format and has shipped more than one.
+  test('accepts the current ATTA-prefixed form', () => {
+    expect(isTrelloToken(`ATTA${'b3F9x_-'.repeat(10)}`)).toBe(true);
+    expect(isTrelloToken(`ATTA${'a'.repeat(100)}`)).toBe(true);
+  });
+
+  test('rejects what cannot be a credential', () => {
     expect(isTrelloToken('')).toBe(false);
+    expect(isTrelloToken('short')).toBe(false);
+    expect(isTrelloToken('a'.repeat(31))).toBe(false);
+    expect(isTrelloToken('a'.repeat(513))).toBe(false);
     expect(isTrelloToken(undefined)).toBe(false);
     expect(isTrelloToken(null)).toBe(false);
     expect(isTrelloToken(12345)).toBe(false);
     expect(isTrelloToken(`${'a'.repeat(64)}\n`)).toBe(false);
     // No sneaking a newline in to split a later log line.
     expect(isTrelloToken(`${'a'.repeat(32)}\n${'a'.repeat(31)}`)).toBe(false);
+    expect(isTrelloToken(`${'a'.repeat(32)} ${'a'.repeat(32)}`)).toBe(false);
+    expect(isTrelloToken(`${'a'.repeat(32)}\u0000`)).toBe(false);
   });
 });
 

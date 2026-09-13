@@ -61,13 +61,18 @@ export const PENDING_AUTH_MAX = 8;
 export const NONCE_BYTES = 32;
 
 /**
- * Trello tokens are 64 hex characters. Enforced on the browser callback
- * because that input is untrusted; the `--token-file` CLI path deliberately
- * does not enforce it, so a future format change still has a way in.
+ * Why this is a bound and not an exact shape: Trello does not document its
+ * token format and has shipped at least two. Older tokens are 64 hex
+ * characters; current ones are longer and `ATTA`-prefixed. Pinning the hex
+ * form rejected a perfectly good token with "unexpected format", so this now
+ * only rules out what cannot be a credential — empty, absurdly long, or
+ * carrying whitespace/control characters that would smuggle a second value
+ * through. Authenticity is decided by GET /1/members/me, which is the only
+ * check that can actually tell a real token from a well-shaped fake.
  */
-const TRELLO_TOKEN_PATTERN = /^[0-9a-f]{64}$/iu;
+const TRELLO_TOKEN_PATTERN = /^[A-Za-z0-9_-]{32,512}$/u;
 
-/** The most a legitimate callback POST can be: a nonce and a 64-char token. */
+/** The most a legitimate callback POST can be: a nonce and a token. */
 const MAX_BODY_BYTES = 4096;
 
 export function isTrelloToken(value: unknown): value is string {
