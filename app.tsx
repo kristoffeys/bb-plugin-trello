@@ -39,6 +39,7 @@ import {
   useRealtime,
   useRealtimeConnectionState,
   useRpc,
+  useSettings,
   type PluginNavPanelProps,
   type PluginNewThreadPanelProps,
   type PluginPendingInteractionProps,
@@ -3050,6 +3051,17 @@ function DirectCreateTaskAction({ projectId }: { projectId: string | null }) {
 }
 
 function ComposerCreateTaskAction() {
+  const { values } = useSettings();
+
+  // Returning no component removes the action from the composer entirely;
+  // it is not merely an unavailable button. Undefined is treated as enabled
+  // so the default remains backward-compatible while settings load.
+  if (values?.composerCardActionEnabled === false) return null;
+
+  return <EnabledComposerCreateTaskAction />;
+}
+
+function EnabledComposerCreateTaskAction() {
   const view = useComposerView();
   const composer = useComposer();
   const { projectId: contextProjectId } = useBbContext();

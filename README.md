@@ -88,6 +88,14 @@ user-supplied key is kept out of error messages alongside the token because
 Trello sends both as **query parameters**, and the plugin scrubs
 `key=`/`token=` out of every error message it produces.
 
+### Chat composer action
+
+The **Turn prompt into Trello card** action is enabled by default. To remove it
+from thread and new-thread chat composers, open **Settings → Plugins → Trello**
+and turn off **Show “Turn prompt into Trello card” in the chat composer**. This
+is an install-wide plugin preference; it does not alter the Trello connection
+or any project’s board mapping and board-view settings.
+
 `bb trello disconnect` removes the stored key and token and cancels any
 authorization that is still in flight.
 

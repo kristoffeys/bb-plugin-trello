@@ -45,6 +45,7 @@ import {
 import { createWorkItemStore, type ProjectScopeDefaults } from './store.js';
 import { deleteSecretFile, writeSecretFile } from './lib/secret-file.js';
 import { flagValue, positionalArgs } from './cli-args.js';
+import { trelloPluginSettings } from './plugin-settings.js';
 import {
   AUTH_CALLBACK_PATH,
   AUTH_COMPLETE_PATH,
@@ -75,6 +76,10 @@ const SYNC_INTERVAL_MS = 5 * 60_000;
 
 export default async function plugin(bb: BbPluginApi) {
   bb.log.info('loaded');
+
+  // This is deliberately plugin-wide: project board settings remain limited
+  // to their existing mapping and presentation responsibilities.
+  bb.settings.define(trelloPluginSettings);
 
   const store = createWorkItemStore(bb);
   const pluginDataDirectory = dirname(bb.storage.database().name);
