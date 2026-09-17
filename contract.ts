@@ -124,7 +124,12 @@ export const secretMutationSchema = z.discriminatedUnion('operation', [
 export type SecretMutation = z.infer<typeof secretMutationSchema>;
 
 export const trackerProjectSchema = z
-  .object({ id: bbProjectIdSchema, name: z.string() })
+  .object({
+    id: bbProjectIdSchema,
+    name: z.string(),
+    /** Empty when this project has not been linked to a Trello board yet. */
+    boardId: z.string().trim().max(64)
+  })
   .strict();
 export type TrackerProject = z.infer<typeof trackerProjectSchema>;
 

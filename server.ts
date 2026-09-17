@@ -576,7 +576,11 @@ export default async function plugin(bb: BbPluginApi) {
       return {
         projects: projects.map(project => ({
           id: project.id,
-          name: project.name
+          name: project.name,
+          // Keep this a complete BB catalog: Manage needs to expose projects
+          // before they have a board mapping. The UI derives its sidebar from
+          // this persisted mapping instead of dropping unmapped projects here.
+          boardId: store.projectScope(project.id, SCOPE_DEFAULTS).boardId
         }))
       };
     },

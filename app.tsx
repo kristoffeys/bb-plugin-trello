@@ -117,6 +117,7 @@ import { FILTER_PRESET_NAME_MAX_LENGTH } from './filter-presets.js';
 // Straight from app-key.js, not the trello/ barrel: the barrel pulls in the
 // transport and node:crypto, neither of which belongs in the app bundle.
 import { TRELLO_POWER_UP_ADMIN_URL } from './trello/app-key.js';
+import { linkedProjects, manageProjectId } from './project-navigation.js';
 import {
   DEFAULT_WORKFLOW_STATUS_ORDER,
   assigneeAvatarIdentity,
@@ -4088,7 +4089,9 @@ function TrackerSidebar({
             ))}
           </div>
         ) : (
-          <p className="px-2 py-1 text-xs text-muted-foreground">No BB projects found.</p>
+          <p className="px-2 py-1 text-xs text-muted-foreground">
+            No linked projects. Use Manage to link a Trello board.
+          </p>
         )}
       </nav>
       <div className="shrink-0 border-t border-border-hairline px-2 py-1.5">
@@ -4200,6 +4203,8 @@ function TrelloPanel({ subPath }: PluginNavPanelProps) {
   }, [loadProjects]);
   useRefreshOnReconnect(() => void loadProjects());
 
+  const sidebarProjects = useMemo(() => linkedProjects(projects), [projects]);
+
   useEffect(() => {
     if (route.kind === 'project') {
       lastBrowseRouteRef.current = route;
@@ -4215,31 +4220,34 @@ function TrelloPanel({ subPath }: PluginNavPanelProps) {
   }, [route]);
 
   const preferredProjectId = useMemo(() => {
-    if (!projects || projects.length === 0) return null;
-    if (contextProjectId && projects.some(project => project.id === contextProjectId)) {
+    if (!sidebarProjects || sidebarProjects.length === 0) return null;
+    if (contextProjectId && sidebarProjects.some(project => project.id === contextProjectId)) {
       return contextProjectId;
     }
     const lastProjectId = loadLastProjectId();
-    if (lastProjectId && projects.some(project => project.id === lastProjectId)) return lastProjectId;
-    return projects[0]?.id ?? null;
-  }, [contextProjectId, projects]);
+    if (lastProjectId && sidebarProjects.some(project => project.id === lastProjectId)) return lastProjectId;
+    return sidebarProjects[0]?.id ?? null;
+  }, [contextProjectId, sidebarProjects]);
 
   useEffect(() => {
-    if (route.kind !== 'root' || preferredProjectId === null) return;
+    if (route.kind !== 'root' || projects === undefined) return;
     // Restore where the user left off, but only if that project still exists
     // and the app has not put us in a different project's context.
     const restored = parseTrackerRoute(loadLastRoute() ?? '');
     const restorable =
       (restored.kind === 'item' || restored.kind === 'project') &&
-      (projects ?? []).some(project => project.id === restored.projectId) &&
+      (sidebarProjects ?? []).some(project => project.id === restored.projectId) &&
       (contextProjectId === null || contextProjectId === restored.projectId);
     navigate.toPluginPanel(PANEL_PATH, {
-      subPath: restorable
-        ? routeToSubPath(restored)
-        : routeToSubPath({ kind: 'project', projectId: preferredProjectId }),
+      subPath:
+        preferredProjectId === null
+          ? 'manage'
+          : restorable
+            ? routeToSubPath(restored)
+            : routeToSubPath({ kind: 'project', projectId: preferredProjectId }),
       replace: true
     });
-  }, [contextProjectId, navigate, preferredProjectId, projects, route.kind]);
+  }, [contextProjectId, navigate, preferredProjectId, projects, route.kind, sidebarProjects]);
 
   const go = (nextRoute: TrackerRoute) =>
     navigate.toPluginPanel(PANEL_PATH, { subPath: routeToSubPath(nextRoute) });
@@ -4268,7 +4276,7 @@ function TrelloPanel({ subPath }: PluginNavPanelProps) {
   if (route.kind === 'manage') {
     outlet = (
       <ManageView
-        projectId={route.projectId ?? preferredProjectId}
+        projectId={manageProjectId(route.projectId, projects)}
         projects={projects}
         isLoadingProjects={projects === undefined}
         onProjectChange={projectId => go({ kind: 'manage', projectId })}
@@ -4302,7 +4310,7 @@ function TrelloPanel({ subPath }: PluginNavPanelProps) {
       {!sidebarCollapsed ? (
         <TrackerSidebar
           route={route}
-          projects={projects}
+          projects={sidebarProjects}
           isLoading={projects === undefined}
           onNavigate={go}
         />
