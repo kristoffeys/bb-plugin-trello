@@ -149,7 +149,11 @@ export async function diagnoseCredentialFault(
   }
 }
 
-export type RequestInitLite = { method?: string; body?: string }
+export type RequestInitLite = {
+  method?: string
+  /** A JSON string, or FormData for a file upload. */
+  body?: string | FormData
+}
 
 export type TrelloTransport = {
   /** A single request. Returns null for a 204 or an empty body. */
@@ -257,7 +261,12 @@ export function createTransport(
         body: init?.body,
         headers: {
           Accept: 'application/json',
-          ...(init?.body === undefined ? {} : { 'Content-Type': 'application/json' })
+          // FormData carries its own content type including the multipart
+          // boundary, which fetch can only generate once the body is built —
+          // setting the header here would send a body no parser can read.
+          ...(typeof init?.body === 'string'
+            ? { 'Content-Type': 'application/json' }
+            : {})
         }
       })
     } catch (error) {

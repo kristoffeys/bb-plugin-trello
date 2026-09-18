@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 import { mapAttachment, mapComment } from '../trello/mapper.js';
-import { createTrelloApi } from '../trello/index.js';
+import { contentTypeForName, createTrelloApi } from '../trello/index.js';
 
 const CREDENTIALS = { apiKey: 'key-abc', apiToken: 'token-xyz' };
 
@@ -173,5 +173,70 @@ describe('getCardComments', () => {
     expect(fetchImpl.mock.calls[0]![1]?.method).toBe('POST');
     expect(url.pathname).toBe('/1/cards/card-1/actions/comments');
     expect(url.searchParams.get('text')).toBe('Shipped it');
+  });
+});
+
+describe('contentTypeForName', () => {
+  test('knows the types a ticket attachment is likely to be', () => {
+    expect(contentTypeForName('trace.PDF')).toBe('application/pdf');
+    expect(contentTypeForName('shot.png')).toBe('image/png');
+    expect(contentTypeForName('notes.tar.gz')).toBe('application/octet-stream');
+    expect(contentTypeForName('README')).toBe('application/octet-stream');
+  });
+});
+
+describe('addCardAttachment', () => {
+  test('posts the file as multipart form data, not JSON', async () => {
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = init?.body as FormData;
+      expect(body).toBeInstanceOf(FormData);
+      expect(body.get('name')).toBe('trace.pdf');
+      const file = body.get('file') as File;
+      expect(file.name).toBe('trace.pdf');
+      expect(file.type).toBe('application/pdf');
+      expect(await file.text()).toBe('hello');
+      // A hand-set Content-Type would drop the multipart boundary.
+      expect(
+        new Headers(init?.headers).get('content-type')
+      ).toBeNull();
+      return jsonResponse({
+        id: '5f2a1b3c4d5e6f7a8b9c0d1e',
+        name: 'trace.pdf',
+        mimeType: 'application/pdf',
+        bytes: 5,
+        url: 'https://trello.com/1/cards/x/attachments/y/download/trace.pdf',
+        date: '2026-02-03T04:05:06.000Z'
+      });
+    });
+    const api = createTrelloApi(CREDENTIALS, {
+      fetchImpl: fetchImpl as unknown as typeof fetch
+    });
+
+    const attachment = await api.addCardAttachment('card-1', {
+      name: 'trace.pdf',
+      contentType: 'application/pdf',
+      bytes: new TextEncoder().encode('hello')
+    });
+
+    expect(attachment.name).toBe('trace.pdf');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(String(url)).toContain('/cards/card-1/attachments');
+    expect(init?.method).toBe('POST');
+  });
+
+  test('refuses a file with no name rather than uploading a nameless part', async () => {
+    const fetchImpl = vi.fn();
+    const api = createTrelloApi(CREDENTIALS, {
+      fetchImpl: fetchImpl as unknown as typeof fetch
+    });
+    await expect(
+      api.addCardAttachment('card-1', {
+        name: '  ',
+        contentType: '',
+        bytes: new Uint8Array()
+      })
+    ).rejects.toThrow(/filename/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

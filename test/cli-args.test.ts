@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { flagValue, positionalArgs } from '../cli-args.js';
+import { flagValue, flagValues, positionalArgs } from '../cli-args.js';
 
 describe('positionalArgs', () => {
   test('reads the locator whichever side of the flags it lands on', () => {
@@ -83,5 +83,28 @@ describe('flagValue', () => {
     expect(flagValue(['show', '5f2a1b3c4d5e6f7a8b9c0d1e'], '--project')).toBeNull();
     expect(flagValue(['show', '--project'], '--project')).toBeNull();
     expect(flagValue(['show', '--project', '--json'], '--project')).toBeNull();
+  });
+});
+
+describe('flagValues', () => {
+  test('collects every occurrence of a repeatable flag, in order', () => {
+    expect(
+      flagValues(
+        ['create', '--attach', '/tmp/a.pdf', '--title', 'x', '--attach', '/tmp/b.png'],
+        '--attach'
+      )
+    ).toEqual(['/tmp/a.pdf', '/tmp/b.png']);
+  });
+
+  test('skips an --attach given no value, and is empty when absent', () => {
+    expect(flagValues(['create', '--attach', '--json'], '--attach')).toEqual([]);
+    expect(flagValues(['create', '--attach'], '--attach')).toEqual([]);
+    expect(flagValues(['create', '--json'], '--attach')).toEqual([]);
+  });
+
+  test('--attach values never become positional arguments', () => {
+    expect(
+      positionalArgs(['create', '--attach', '/tmp/a.pdf', '--attach', '/tmp/b.png'])
+    ).toEqual(['create']);
   });
 });

@@ -64,6 +64,42 @@ function mutationQuery(params: Record<string, string>): string {
   return new URLSearchParams(params).toString()
 }
 
+/** A file on its way to a card. */
+export interface TrelloAttachmentUpload {
+  name: string
+  /** '' is allowed — Trello then sniffs the type itself. */
+  contentType: string
+  bytes: Uint8Array
+}
+
+const CONTENT_TYPES: Readonly<Record<string, string>> = {
+  csv: 'text/csv',
+  gif: 'image/gif',
+  jpeg: 'image/jpeg',
+  jpg: 'image/jpeg',
+  json: 'application/json',
+  md: 'text/markdown',
+  pdf: 'application/pdf',
+  png: 'image/png',
+  svg: 'image/svg+xml',
+  txt: 'text/plain',
+  webp: 'image/webp',
+  zip: 'application/zip'
+}
+
+/**
+ * A content type guessed from a filename.
+ *
+ * Only what a ticket attachment is actually likely to be: Trello uses the type
+ * to decide whether a card shows a preview, and an unknown type degrades to a
+ * plain download rather than to a failure, so a full mime database would buy
+ * nothing.
+ */
+export function contentTypeForName(name: string): string {
+  const extension = name.split('.').pop()?.toLowerCase() ?? ''
+  return CONTENT_TYPES[extension] ?? 'application/octet-stream'
+}
+
 export interface TrelloCardPage {
   /** Cards in scope, newest-updated first, capped at the caller's limit. */
   cards: TrelloCard[]
@@ -84,6 +120,11 @@ export interface TrelloApi {
   addCardComment(cardId: string, body: string): Promise<TrelloComment>
   getCardComments(cardId: string): Promise<TrelloComment[]>
   listCardAttachments(cardId: string): Promise<TrelloAttachment[]>
+  /** Upload one file to a card. Trello caps size per plan (10MB on free). */
+  addCardAttachment(
+    cardId: string,
+    file: TrelloAttachmentUpload
+  ): Promise<TrelloAttachment>
 
   /** Open boards the token can see. */
   listBoards(args?: { query?: string; limit?: number }): Promise<TrelloBoard[]>
@@ -277,6 +318,35 @@ export function createTrelloApi(
           '?fields=id,name,mimeType,bytes,url,previews,date'
       )
       return records.map(mapAttachment)
+    },
+
+    async addCardAttachment(
+      cardId: string,
+      file: TrelloAttachmentUpload
+    ): Promise<TrelloAttachment> {
+      const name = file.name.trim()
+      if (!name) {
+        throw new TrelloApiError('An attachment needs a filename.')
+      }
+      const form = new FormData()
+      // A Blob rather than the raw bytes: the multipart part needs a length and
+      // a filename, and Trello rejects a `file` part that carries neither.
+      form.append(
+        'file',
+        // Cast: lib.dom types BlobPart as ArrayBuffer-backed only, while a
+        // Buffer from readFile is Uint8Array<ArrayBufferLike>. Copying it just
+        // to satisfy that would duplicate every attachment in memory.
+        new Blob([file.bytes as BlobPart], {
+          type: file.contentType || contentTypeForName(name)
+        }),
+        name
+      )
+      form.append('name', name)
+      const response = await transport.request<TrelloRecord>(
+        `/cards/${encodeURIComponent(cardId)}/attachments`,
+        { method: 'POST', body: form }
+      )
+      return mapAttachment(asRecord(response))
     },
 
     async listBoards(args: { query?: string; limit?: number } = {}): Promise<TrelloBoard[]> {

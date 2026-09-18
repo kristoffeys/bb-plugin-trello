@@ -28,7 +28,7 @@ between lists is the only status change there is.
 | `bb trello move <locator> --status <list-id>` | Move a card to another list. |
 | `bb trello comment <locator> <text>` | Add a comment to a card. |
 | `bb trello edit <locator> --title <text>` | Edit a card's title or description. |
-| `bb trello create --title <text> --list <list-id>` | Create a card in a list on the mapped board. |
+| `bb trello create --title <text> --list <list-id> [--attach <file>]...` | Create a card in a list on the mapped board, with optional local files uploaded to it. |
 | `bb trello refresh` | Force a sync with Trello before reading. |
 | `bb trello config` | Show or change which Trello board this bb project maps to. |
 | `bb trello presets list` | List saved filter presets for the board. |
@@ -81,6 +81,8 @@ Useful flags:
   dropping the others.
 - A "not found" error usually means the cache is stale: run `bb trello refresh`
   and list again.
-- Attachments cannot be downloaded. Trello serves attachment files behind the
-  uploader's board permissions, so `show` lists their names only. To read one,
-  the user must open the card URL in their browser.
+- Attachments upload but do not download. `create --attach <file>` (repeatable)
+  puts local files on the new card; a failed upload becomes a warning, not a
+  failed create. Reading one back is not possible — Trello serves the files
+  behind the uploader's board permissions, so `show` lists names only and the
+  user must open the card URL in their browser.

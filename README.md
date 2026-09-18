@@ -176,6 +176,7 @@ bb trello comment <locator> <text>
 bb trello edit <locator> [--title <text>] [--description <text>]
 bb trello create --title <text> --list <list-id> [--description <text>]
                  [--assignee <member-id>] [--due <YYYY-MM-DD>]
+                 [--attach <file>]...
 bb trello refresh
 bb trello config [--board <id>] [--assigned-to-me on|off] [--include-closed on|off]
 bb trello connect [--key-file <path> --token-file <path>]
@@ -214,11 +215,17 @@ worked in parallel never collide in one checkout.
 
 ## Attachments
 
-Trello serves attachment files from `trello.com` behind the uploader's board
-permissions, and downloading them would mean streaming private bytes through
-the plugin. The board therefore lists attachment names, types, and sizes, and
-opens the file in your browser, where your Trello session authenticates it.
-Images are not inlined.
+`bb trello create --attach <file>` uploads local files to the new card, one
+`--attach` per file. They go up one at a time, after the card exists — Trello
+has no call that creates a card and its files together. A file that will not
+upload is reported as a warning and never takes the card down with it; Trello's
+own size ceiling applies (10MB per file on free plans).
+
+Downloading is a different story. Trello serves attachment files from
+`trello.com` behind the uploader's board permissions, and fetching them would
+mean streaming private bytes through the plugin. The board therefore lists
+attachment names, types, and sizes, and opens the file in your browser, where
+your Trello session authenticates it. Images are not inlined.
 
 ## Rate limits
 

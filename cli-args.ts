@@ -16,6 +16,7 @@ export const VALUE_FLAGS: ReadonlySet<string> = new Set([
   '--list',
   '--assignee',
   '--due',
+  '--attach',
   '--board',
   '--assigned-to-me',
   '--include-closed',
@@ -38,6 +39,19 @@ export function flagValue(argv: readonly string[], flag: string): string | null 
   // A flag at the end of argv, or one followed by another flag, has no value.
   if (value === undefined || value.startsWith('--')) return null;
   return value;
+}
+
+/** Every value given for a repeatable flag, in the order they were typed. */
+export function flagValues(argv: readonly string[], flag: string): string[] {
+  const values: string[] = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] !== flag) continue;
+    const value = argv[index + 1];
+    if (value === undefined || value.startsWith('--')) continue;
+    values.push(value);
+    index += 1;
+  }
+  return values;
 }
 
 /**

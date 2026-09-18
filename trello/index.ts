@@ -1,6 +1,11 @@
 // Public surface of the Trello API layer.
 export { BOARD_CARD_LIMIT } from './api.js'
-export { createTrelloApi, type TrelloApi } from './api'
+export {
+  contentTypeForName,
+  createTrelloApi,
+  type TrelloApi,
+  type TrelloAttachmentUpload
+} from './api'
 export {
   TrelloApiError,
   authFault,

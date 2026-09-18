@@ -14,7 +14,7 @@
 // Both credentials live in 0600 files rather than plugin settings so changing
 // them does not require a plugin reload — and because Trello sends them as
 // query parameters, keeping them out of argv and logs matters more than usual.
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import type { BbPluginApi } from '@get-bb/plugin-sdk';
 import {
@@ -44,7 +44,7 @@ import {
 } from './contract.js';
 import { createWorkItemStore, type ProjectScopeDefaults } from './store.js';
 import { deleteSecretFile, writeSecretFile } from './lib/secret-file.js';
-import { flagValue, positionalArgs } from './cli-args.js';
+import { flagValue, flagValues, positionalArgs } from './cli-args.js';
 import { trelloPluginSettings } from './plugin-settings.js';
 import {
   AUTH_CALLBACK_PATH,
@@ -56,6 +56,7 @@ import {
   authFaultMessage,
   callbackPageResponse,
   cardStateCategory,
+  contentTypeForName,
   createCompleteAuthHandler,
   createNonceStore,
   createTrelloApi,
@@ -857,6 +858,41 @@ export default async function plugin(bb: BbPluginApi) {
     };
   }
 
+  /**
+   * Upload local files to a card, one by one.
+   *
+   * Sequential on purpose: Trello rate-limits per token, and a mail with eight
+   * attachments fired in parallel is exactly the burst that earns a 429.
+   */
+  async function attachFiles(
+    cardId: string,
+    paths: readonly string[]
+  ): Promise<{ names: string[]; warnings: string[] }> {
+    if (paths.length === 0) return { names: [], warnings: [] };
+    const api = await requireApi();
+    const names: string[] = [];
+    const warnings: string[] = [];
+    for (const path of paths) {
+      const name = basename(path);
+      try {
+        const bytes = await readFile(path);
+        await api.addCardAttachment(cardId, {
+          name,
+          contentType: contentTypeForName(name),
+          bytes
+        });
+        names.push(name);
+      } catch (error) {
+        warnings.push(
+          `Could not attach ${name}: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      }
+    }
+    return { names, warnings };
+  }
+
   // -------------------------------------------------------------------------
   // Composer mentions
   // -------------------------------------------------------------------------
@@ -945,7 +981,7 @@ export default async function plugin(bb: BbPluginApi) {
     '  bb trello edit <locator> [--title <text>] [--description <text>] [--project <proj_id>] [--json]',
     '  bb trello create --title <text> --list <list-id> [--description <text>]',
     '                   [--assignee <member-id>] [--due <YYYY-MM-DD>]',
-    '                   [--project <proj_id>] [--json]',
+    '                   [--attach <file>]... [--project <proj_id>] [--json]',
     '  bb trello refresh [--project <proj_id>] [--json]',
     '  bb trello config [--project <proj_id>] [--board <id>]',
     '                   [--assigned-to-me <on|off>] [--include-closed <on|off>] [--json]',
@@ -1016,7 +1052,7 @@ export default async function plugin(bb: BbPluginApi) {
         name: 'create',
         summary: 'Create a card in a list on the mapped board',
         usage:
-          'bb trello create --title <text> --list <list-id> [--description <text>] [--json]'
+          'bb trello create --title <text> --list <list-id> [--description <text>] [--attach <file>]... [--json]'
       },
       {
         name: 'refresh',
@@ -1352,12 +1388,28 @@ export default async function plugin(bb: BbPluginApi) {
               assigneeId: flagValue(args, '--assignee'),
               dueDate: flagValue(args, '--due')
             });
+            // Uploaded after the card exists, because Trello has no way to
+            // create a card and its files in one call. A file that will not
+            // upload is reported, never silently dropped, and never undoes a
+            // card the user can already see.
+            const uploaded = await attachFiles(
+              result.item.locator,
+              flagValues(args, '--attach')
+            );
+            const outcome = {
+              ...result,
+              warnings: [...result.warnings, ...uploaded.warnings],
+              attachments: uploaded.names
+            };
             return reply(
-              result,
+              outcome,
               [
                 `Created ${result.item.key}: ${result.item.title}`,
                 result.item.url,
-                ...result.warnings
+                ...(uploaded.names.length === 0
+                  ? []
+                  : [`Attached: ${uploaded.names.join(', ')}`]),
+                ...outcome.warnings
               ].join('\n')
             );
           }
